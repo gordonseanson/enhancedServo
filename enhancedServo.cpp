@@ -2,7 +2,7 @@
 #include "enhancedServo.h"
 #include "Servo.h"
 
-enhancedServo::enhancedServo(char _name, Servo _servo, int _feed_pin, int _feed_min, int _feed_max, int _write_pin, int _write_min, int _write_max, double _Ki_neg, double _Ki_pos, double _alpha, int _errorMargin) {
+enhancedServo::enhancedServo(char _name, Servo _servo, int _feed_pin, int _feed_min, int _feed_max, int _write_pin, int _write_min, int _write_max, double _Ki, double _alpha, int _errorMargin) {
 	this->name = _name;
 	this->servo = _servo;
 	this->feed_pin = _feed_pin;
@@ -11,11 +11,15 @@ enhancedServo::enhancedServo(char _name, Servo _servo, int _feed_pin, int _feed_
 	this->write_pin = _write_pin;
 	this->write_min = _write_min;
 	this->write_max = _write_max;
-	this->Ki_neg = _Ki_neg;
-	this->Ki_pos = _Ki_pos;
+	this->Ki = _Ki;
 	this->alpha = _alpha;
 	this->errorMargin = _errorMargin;
 }
+
+double falpha = 0.6;
+double fAvg;
+int error;
+
 
 void enhancedServo::write(int microseconds) {
 	servo.writeMicroseconds(microseconds);
@@ -29,28 +33,31 @@ void enhancedServo::detach() {
 	servo.detach();
 }
 
+// Initializes the integral as the pwm output for where the servo already is
 void enhancedServo::preInitializer() {
 	integral = rangeMap(feed_min, feed_max, write_min, write_max, getFeedback());
 	expMvingAvg = integral;
 }
 
+// Initializes the arrival conditions as false before each move
 void enhancedServo::loopInitializer() {
 	timesCorrect = 0;
 	arrived = false;
 }
 
+// Computes pwm to send to the servo; intended to run in a loop
 void enhancedServo::computePath(int position) {
-	if (timesCorrect < 4) {
-		if (position - getFeedback() < 0) {
-			integral += error * Ki_neg;
-		} else {
-			integral += error * Ki_pos;
-		}
-		expMvingAvg = alpha * constrain(integral, write_min, write_max) + (1 - alpha) * expMvingAvg;
+	// If the servo has not reported being at the correct positon for a certain number of cycles, continues computing output
+	if (timesCorrect < 3) {
+		// Integral controller
+		integral += error * Ki;
+		// Running average for integral
+		expMvingAvg = alpha * constrain(integral, write_min, write_max) + (1-alpha) * expMvingAvg;
 		servo.writeMicroseconds((int) expMvingAvg);
 		error = position - getFeedback();
+		fAvg = falpha * error + (1-falpha) * fAvg;
 		//Serial.print("Servo "); Serial.print(name); Serial.print(" error: "); Serial.print(error); Serial.print("\n");
-		if (abs(error) <= errorMargin) {
+		if (abs(fAvg) <= errorMargin) {
 			timesCorrect++;
 		} else {
 			timesCorrect = 0;

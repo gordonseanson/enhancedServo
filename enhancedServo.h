@@ -7,7 +7,7 @@
 class enhancedServo
 {
   public:
-    enhancedServo(char _name, Servo _servo, int _feed_pin, int _feed_min, int _feed_max, int _write_pin, int _write_min, int _write_max, double _Ki_neg, double _Ki_pos, double _alpha, int _errorMargin);
+    enhancedServo(char _name, Servo _servo, int _feed_pin, int _feed_min, int _feed_max, int _write_pin, int _write_min, int _write_max, double _Ki, double _alpha, int _errorMargin);
     char name;
     Servo servo;
     int feed_pin;
@@ -16,8 +16,7 @@ class enhancedServo
     int write_pin;
     int write_min;
     int write_max;
-    double Ki_neg;
-    double Ki_pos;
+    double Ki;
     double alpha;
     int errorMargin;
     void write(int microseconds);
