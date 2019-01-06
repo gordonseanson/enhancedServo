@@ -3,39 +3,70 @@
 
 #include "Arduino.h"
 #include "Servo.h"
+#include <String.h>
+
+#include <Wire.h>
+#include "Adafruit_PWMServoDriver.h"
 
 class enhancedServo
 {
   public:
-    enhancedServo(char _name, Servo _servo, int _feed_pin, int _feed_min, int _feed_max, int _write_pin, int _write_min, int _write_max, double _Ki, double _alpha, int _errorMargin);
-    char name;
-    Servo servo;
-    int feed_pin;
+    enhancedServo(
+        Adafruit_PWMServoDriver _pwm, 
+        String _name, 
+        uint8_t _feed_pin, 
+        uint8_t _pot_pin,
+        uint8_t _pot_reference_pin, 
+        uint8_t _write_pin, 
+        int _write_min, 
+        int _write_max,
+        int _feed_min,
+        int _feed_max,
+        double _Ki, 
+        double _alpha, 
+        double _errorMargin,
+        bool _gripper);
+
+    bool gripper;
+    String name;
+    Adafruit_PWMServoDriver pwm;
+    uint8_t feed_pin;
+    uint8_t pot_pin;
+    uint8_t pot_reference_pin;
     int feed_min;
     int feed_max;
-    int write_pin;
+    uint8_t write_pin;
     int write_min;
     int write_max;
     double Ki;
     double alpha;
-    int errorMargin;
-    void write(int microseconds);
-    void attach();
+    double errorMargin;
+    void write(double microseconds);
     void detach();
     void preInitializer();
+    void setupInitializer();
     void loopInitializer();
-    void computePath(int position);
-    int getOutput();
+    void computePath(double position);
     bool getArrived();
     int getFeedback();
     double rangeMap(float a, float b, float c, float d, float input);
 
-    int feedback[4];
-    int error;
-	int timesCorrect;
+    double feedback[4];
+    double error;
+	double timesCorrect;
 	bool arrived;
 	double integral;
-	double expMvingAvg;
+	double integralAvg;
+
+    double pot_pin_V;
+    double pot_reference_V;
+    double feedback_V;
+
+    double pot_pin_V_avg;
+    double pot_reference_V_avg;
+    double feedback_V_avg;
+
+    bool DEBUG;
 };
 
 #endif

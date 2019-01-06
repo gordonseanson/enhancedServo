@@ -1,42 +1,70 @@
 #include "Arduino.h"
 #include "enhancedServo.h"
 #include "Servo.h"
+#include <String.h>
 
-enhancedServo::enhancedServo(char _name, Servo _servo, int _feed_pin, int _feed_min, int _feed_max, int _write_pin, int _write_min, int _write_max, double _Ki, double _alpha, int _errorMargin) {
+#include <Wire.h>
+#include "Adafruit_PWMServoDriver.h"
+
+enhancedServo::enhancedServo(
+	Adafruit_PWMServoDriver _pwm, 
+	String _name, 
+	uint8_t _feed_pin,	// middle pin of potentiometer
+	uint8_t _pot_pin,	// top pin of potentiometer
+	uint8_t _pot_reference_pin,	// bottom pin of potentiometer
+	uint8_t _write_pin,	// write pin of servo
+	int _write_min,
+	int _write_max, 
+	int _feed_min,
+	int _feed_max,
+	double _Ki,	// constant for tuning integral control loop
+	double _alpha,	// contant for tuning control loop EWMA
+	double _errorMargin,	// constant for tuning the accuracy of the servo motion
+	bool _gripper) {
+
+	this->gripper = _gripper;
 	this->name = _name;
-	this->servo = _servo;
+	this->pwm = _pwm;
 	this->feed_pin = _feed_pin;
-	this->feed_min = _feed_min;
-	this->feed_max = _feed_max;
+	this->pot_pin = _pot_pin;
+	this->pot_reference_pin = _pot_reference_pin;
 	this->write_pin = _write_pin;
 	this->write_min = _write_min;
 	this->write_max = _write_max;
+	this->feed_min = _feed_min;
+	this->feed_max = _feed_max;
 	this->Ki = _Ki;
 	this->alpha = _alpha;
 	this->errorMargin = _errorMargin;
 }
 
-double falpha = 0.6;
-double fAvg;
-int error;
-
-
-void enhancedServo::write(int microseconds) {
-	servo.writeMicroseconds(microseconds);
+// Tell servo to move
+void enhancedServo::write(double microseconds) {
+	pwm.setPWM(write_pin, 0, microseconds);
 }
 
-void enhancedServo::attach() {
-	servo.attach(write_pin);
-}
-
+// Setting these PWM values lets you move the servo freely by hand
 void enhancedServo::detach() {
-	servo.detach();
+	pwm.setPWM(write_pin, 0, 4096);
 }
 
-// Initializes the integral as the pwm output for where the servo already is
+// Returns arrival status (for use when the arm is moving through position sets)
+bool enhancedServo::getArrived() {
+	return arrived;
+}
+
+// Call this function before doing any arm movement to correctly initialize running averages for feedback
+void enhancedServo::setupInitializer() {
+pot_pin_V_avg = -1;
+pot_reference_V_avg = -1;
+feedback_V_avg = -1;
+DEBUG = false;
+}
+
+// Call this function before doing any arm movement to correctly initialize the integral control loop
 void enhancedServo::preInitializer() {
 	integral = rangeMap(feed_min, feed_max, write_min, write_max, getFeedback());
-	expMvingAvg = integral;
+	integralAvg = integral;
 }
 
 // Initializes the arrival conditions as false before each move
@@ -45,45 +73,84 @@ void enhancedServo::loopInitializer() {
 	arrived = false;
 }
 
+// Initializing some variables for error EWMA
+double errorAlpha = 0.75;
+double errorAvg;
+
+// Initializing some variables for feedback EWMA
+double fAlpha = .2;	// change this value to adjust feedback EWMA
+double fBeta = 1 - fAlpha;
+
+// Takes relative feedback measurement and keeps running average of feedback
+int enhancedServo::getFeedback() {
+  // Converting analog input values to Voltage units
+  pot_pin_V = (double) analogRead(pot_pin) / 1023 * 5;
+  pot_reference_V = (double) analogRead(pot_reference_pin) / 1023 * 5;
+  feedback_V = (double) analogRead(feed_pin) / 1023 * 5;
+  
+  // Setting up seperate variables for running voltage averages
+  // Also sets initial values before running averages start
+  if (pot_pin_V_avg == -1) pot_pin_V_avg = pot_pin_V;
+  if (feedback_V_avg == -1) feedback_V_avg = feedback_V;
+  if (pot_reference_V_avg == -1) pot_reference_V_avg = pot_reference_V;
+
+  // Running averages (EWMA)
+  pot_pin_V_avg = fAlpha * pot_pin_V + fBeta * pot_pin_V_avg;
+  feedback_V_avg = fAlpha * feedback_V + fBeta * feedback_V_avg;
+  pot_reference_V_avg = fAlpha * pot_reference_V + fBeta * pot_reference_V_avg;
+
+  // DEBUG PRINT STATEMENTS
+  if (DEBUG) {
+	  Serial.print("alpha: "); Serial.print(fAlpha); Serial.print(" ");
+	  Serial.print("beta: "); Serial.print(fBeta); Serial.print(" ");
+	  Serial.print("  ||  ");
+	  Serial.print("top V: "); Serial.print(pot_pin_V); Serial.print(" "); 
+	  Serial.print("top avg V: "); Serial.print(pot_pin_V_avg); Serial.print(" ");
+	  Serial.print("  ||  ");
+	  Serial.print("middle V: "); Serial.print(feedback_V); Serial.print(" "); 
+	  Serial.print("middle avg V: "); Serial.print(feedback_V_avg); Serial.print(" ");
+	  Serial.print("  ||  ");
+	  Serial.print("bottom V: "); Serial.print(pot_reference_V); Serial.print(" "); 
+	  Serial.print("bottom avg V: "); Serial.print(pot_reference_V_avg); Serial.print(" ");
+	  Serial.print("  ||  ");
+	  Serial.print("feedback: ");
+  }
+
+  // I ran out of analog input pins, so I had to make this exception for the gripper's servo feedback
+  if (gripper) {
+  	return constrain(analogRead(A15), feed_min, feed_max);
+  }
+
+  // The feedback is equal to the following expression, using measurements from the potentiometer
+  // (middle pin - bottom pin) / (top pin - bottom pin)
+  return (int) constrain(((feedback_V_avg - pot_reference_V_avg) / 
+  	(pot_pin_V_avg - pot_reference_V_avg) * 1000), feed_min, feed_max);
+}
+
 // Computes pwm to send to the servo; intended to run in a loop
-void enhancedServo::computePath(int position) {
+void enhancedServo::computePath(double position) {
 	// If the servo has not reported being at the correct positon for a certain number of cycles, continues computing output
 	if (timesCorrect < 3) {
-		// Integral controller
+		// Integral control loop
 		integral += error * Ki;
+
 		// Running average for integral
-		expMvingAvg = alpha * constrain(integral, write_min, write_max) + (1-alpha) * expMvingAvg;
-		servo.writeMicroseconds((int) expMvingAvg);
-		error = position - getFeedback();
-		fAvg = falpha * error + (1-falpha) * fAvg;
-		//Serial.print("Servo "); Serial.print(name); Serial.print(" error: "); Serial.print(error); Serial.print("\n");
-		if (abs(fAvg) <= errorMargin) {
+		integralAvg = alpha * constrain(integral, write_min, write_max) + (1-alpha) * integralAvg;
+		write((int) integralAvg);
+		
+		// Accuracy managment
+		error = (position - getFeedback());
+		errorAvg = errorAlpha * error + (1-errorAlpha) * errorAvg;
+		if (abs(errorAvg) <= errorMargin) {
 			timesCorrect++;
 		} else {
 			timesCorrect = 0;
 		}
 	} else {
-		servo.writeMicroseconds(expMvingAvg);
+		// After movement complete, holds position
+		write(integralAvg);
 		arrived = true;
-		Serial.print("Servo "); Serial.print(name); Serial.print(" arrived!"); Serial.print("\n");
 	}
-}
-
-int enhancedServo::getOutput() {
-	return (int) expMvingAvg;
-}
-
-bool enhancedServo::getArrived() {
-	if (arrived) {
-		Serial.print("Servo "); Serial.print(name); Serial.print(" arrived!"); Serial.print("\n");
-	} else {
-		Serial.print("Servo "); Serial.print(name); Serial.print(" not arrived!"); Serial.print("\n");
-	}
-	return arrived;
-}
-
-int enhancedServo::getFeedback() {
-	return constrain(analogRead(feed_pin), feed_min, feed_max);
 }
 
 double enhancedServo::rangeMap(float a, float b, float c, float d, float input) {
@@ -96,6 +163,6 @@ double enhancedServo::rangeMap(float a, float b, float c, float d, float input) 
 	} else {
 		x = input;
 	}
-	int value = (c * (1 - ((x - a) / (b - a)))) + (d * ((x - a) / (b - a)));
+	double value = (c * (1 - ((x - a) / (b - a)))) + (d * ((x - a) / (b - a)));
 	return value;
 }
